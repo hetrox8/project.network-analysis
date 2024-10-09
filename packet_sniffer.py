@@ -1,82 +1,86 @@
 from scapy.all import sniff, wrpcap
-from scapy.layers.inet import TCP, IP  # Specific import for TCP and IP
+from scapy.layers.inet import TCP, IP
+from scapy.layers.l2 import ARP, Ether, srp
 from collections import defaultdict
-import csv
 from datetime import datetime
+import csv
 
-# List to store captured packets
+# Packet capture and logging variables
 packets = []
-packet_count = defaultdict(int)  # Dictionary to track packet counts by source IP
-threshold = 5  # Alert threshold for packet counts
-log_file_path = 'packet_log.txt'  # File to log packet details
-csv_log_path = 'packet_log.csv'  # CSV file for packet details
+packet_count = defaultdict(int)
+bandwidth_usage = defaultdict(int)
+device_appearance = {}
+threshold = 5
+time_limit = 3600  # Set a 1-hour connection time limit
+log_file_path = 'packet_log.txt'
+csv_log_path = 'packet_log.csv'
 
-# Function to log packet details to a text file
+# Blacklist
+blacklist = ["192.168.1.100"]  # You can keep this if you want to block certain IPs
+
+# Discover devices on the network
+def discover_devices(ip_range="192.168.0.1/24"):
+    arp_request = Ether(dst="ff:ff:ff:ff:ff:ff") / ARP(pdst=ip_range)
+    answered_list = srp(arp_request, timeout=2, verbose=False)[0]
+    devices = [{'IP': received.psrc, 'MAC': received.hwsrc} for _, received in answered_list]
+    return devices
+
+# Log packets to a text file
 def log_packet(packet):
-    with open(log_file_path, 'a') as log_file:
-        if packet.haslayer(TCP):
-            log_entry = f"TCP Packet: {packet[IP].src} -> {packet[IP].dst}\n"
-        else:
-            log_entry = f"Packet: {packet.summary()}\n"
-        log_file.write(log_entry)
+    try:
+        with open(log_file_path, 'a') as log_file:
+            log_entry = f"TCP Packet: {packet[IP].src} -> {packet[IP].dst}\n" if packet.haslayer(TCP) else f"Packet: {packet.summary()}\n"
+            log_file.write(log_entry)
+    except Exception as e:
+        print(f"Error logging packet: {e}")
 
-# Function to log packet details to a CSV file
+# Log packets to a CSV file
 def log_packet_csv(packet):
-    with open(csv_log_path, mode='a', newline='') as csv_file:
-        log_writer = csv.writer(csv_file)
-        timestamp = datetime.now().isoformat()
-        protocol = "TCP" if packet.haslayer(TCP) else "OTHER"
-        src_ip = packet[IP].src if packet.haslayer(IP) else "N/A"
-        dst_ip = packet[IP].dst if packet.haslayer(IP) else "N/A"
-        
-        log_writer.writerow([timestamp, protocol, src_ip, dst_ip])
+    try:
+        with open(csv_log_path, mode='a', newline='') as csv_file:
+            log_writer = csv.writer(csv_file)
+            timestamp = datetime.now().isoformat()
+            protocol = "TCP" if packet.haslayer(TCP) else "OTHER"
+            src_ip = packet[IP].src if packet.haslayer(IP) else "N/A"
+            dst_ip = packet[IP].dst if packet.haslayer(IP) else "N/A"
+            log_writer.writerow([timestamp, protocol, src_ip, dst_ip])
+    except Exception as e:
+        print(f"Error logging packet to CSV: {e}")
 
-# Function to process each captured packet
+# Packet callback function
 def packet_callback(packet):
-    # Debug print: Show we're processing a packet
-    print("Processing a packet...")
-    
-    # Check if the packet is a TCP packet
-    if packet.haslayer(TCP):
+    if packet.haslayer(IP):
         src_ip = packet[IP].src
         dst_ip = packet[IP].dst
 
-        # Print the source and destination IPs of the packet
-        print(f"TCP Packet: {src_ip} -> {dst_ip}")
+        # Blacklist check
+        if src_ip in blacklist:
+            print(f"Blocked packet from blacklisted IP: {src_ip}")
+            return
 
-        # Increment packet count for the source IP
-        packet_count[src_ip] += 1
-
-        # Trigger an alert if packet count from a source IP exceeds the threshold
-        if packet_count[src_ip] > threshold:
-            print(f"ALERT: Potential DoS attack from {src_ip} (Packets: {packet_count[src_ip]})")
-
-        # Log packet details to the text file and CSV file
+        # Logging all packets for analysis
         log_packet(packet)
         log_packet_csv(packet)
 
-    else:
-        # Print a summary of other types of packets
-        print(packet.summary())
-        # Log non-TCP packets to the file
-        log_packet(packet)
-        log_packet_csv(packet)
+        print(f"Captured packet from {src_ip} to {dst_ip}")
 
-    # Add the packet to our list for future saving
     packets.append(packet)
 
-# Create the CSV file and write the header
+# Create CSV log file with headers
 with open(csv_log_path, mode='w', newline='') as csv_file:
     log_writer = csv.writer(csv_file)
     log_writer.writerow(["Timestamp", "Protocol", "Source IP", "Destination IP"])
 
-# Sniff packets with a broader filter (capture all TCP packets)
+# Start sniffing packets (capturing all traffic)
 print("Starting packet capture...")
-sniff(filter="tcp", prn=packet_callback, count=20)
+sniff(iface="Ethernet", prn=packet_callback, count=20)  # Remove 'filter' to capture all traffic
 
-# Save the captured packets to a PCAP file
+# Save captured packets
 wrpcap('captured_packets.pcap', packets)
-
 print(f"Captured packets saved to 'captured_packets.pcap'")
 print(f"Packet log saved to '{log_file_path}'")
 print(f"CSV packet log saved to '{csv_log_path}'")
+
+# Discover devices
+devices = discover_devices()
+print("Connected devices:", devices)
