@@ -1,6 +1,7 @@
 from scapy.all import sniff, wrpcap
 from scapy.layers.inet import TCP, IP
-from scapy.layers.l2 import ARP, Ether, srp
+from scapy.layers.l2 import ARP, Ether
+from scapy.layers.l2 import srp
 from collections import defaultdict
 from datetime import datetime
 import csv
@@ -15,8 +16,9 @@ time_limit = 3600  # Set a 1-hour connection time limit
 log_file_path = 'packet_log.txt'
 csv_log_path = 'packet_log.csv'
 
-# Blacklist
-blacklist = ["192.168.1.100"]  # You can keep this if you want to block certain IPs
+# Blacklist and Whitelist
+blacklist = ["192.168.1.100"]
+whitelist = ["192.168.1.200"]  # This can be kept for future use
 
 # Discover devices on the network
 def discover_devices(ip_range="192.168.0.1/24"):
@@ -58,11 +60,26 @@ def packet_callback(packet):
             print(f"Blocked packet from blacklisted IP: {src_ip}")
             return
 
-        # Logging all packets for analysis
+        # Bandwidth tracking
+        packet_size = len(packet)
+        bandwidth_usage[src_ip] += packet_size
+        print(f"Bandwidth usage for {src_ip}: {bandwidth_usage[src_ip]} bytes")
+
+        # Check connection time limit
+        if src_ip not in device_appearance:
+            device_appearance[src_ip] = datetime.now()
+        time_connected = (datetime.now() - device_appearance[src_ip]).total_seconds()
+        if time_connected > time_limit:
+            print(f"Device {src_ip} has exceeded the time limit.")
+            return
+
+        # Log packet and count DoS attack attempts
+        packet_count[src_ip] += 1
+        if packet_count[src_ip] > threshold:
+            print(f"ALERT: Potential DoS attack from {src_ip} (Packets: {packet_count[src_ip]})")
+
         log_packet(packet)
         log_packet_csv(packet)
-
-        print(f"Captured packet from {src_ip} to {dst_ip}")
 
     packets.append(packet)
 
@@ -71,9 +88,9 @@ with open(csv_log_path, mode='w', newline='') as csv_file:
     log_writer = csv.writer(csv_file)
     log_writer.writerow(["Timestamp", "Protocol", "Source IP", "Destination IP"])
 
-# Start sniffing packets (capturing all traffic)
+# Start sniffing packets
 print("Starting packet capture...")
-sniff(iface="Ethernet", prn=packet_callback, count=20)  # Remove 'filter' to capture all traffic
+sniff(iface="Ethernet", filter="", prn=packet_callback, count=20)
 
 # Save captured packets
 wrpcap('captured_packets.pcap', packets)
